@@ -1,0 +1,353 @@
+// ==============================================
+// SPOTLIGHT LOVER - DATABASE SCHEMA
+// ==============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================================
+// MODÈLE ADMIN
+// ==============================================
+model Admin {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String
+  name          String
+  role          AdminRole @default(MODERATOR)
+  
+  // 2FA (Two-Factor Authentication)
+  twoFactorSecret String?  @map("two_factor_secret")
+  twoFactorEnabled Boolean @default(false) @map("two_factor_enabled")
+  
+  // Métadonnées
+  lastLoginAt   DateTime? @map("last_login_at")
+  lastLoginIp   String?   @map("last_login_ip")
+  isActive      Boolean   @default(true) @map("is_active")
+  
+  // Timestamps
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@map("admins")
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  MODERATOR
+}
+
+// ==============================================
+// MODÈLE CANDIDAT
+// ==============================================
+model Candidate {
+  id              String          @id @default(uuid())
+  
+  // Informations personnelles
+  name            String
+  age             Int
+  country         String
+  city            String
+  bio             String          @db.VarChar(200)
+  
+  // Vidéo
+  videoUrl        String          @map("video_url")
+  videoPublicId   String?         @map("video_public_id") // Cloudinary ID
+  videoDuration   Int?            @map("video_duration") // Durée en secondes
+  videoFormat     String?         @map("video_format") // mp4, webm
+  videoSize       Int?            @map("video_size") // Taille en bytes
+  thumbnailUrl    String?         @map("thumbnail_url")
+  
+  // Réseaux sociaux (optionnels)
+  instagramHandle String?         @map("instagram_handle")
+  tiktokHandle    String?         @map("tiktok_handle")
+  youtubeHandle   String?         @map("youtube_handle")
+  
+  // Statut et validation
+  status          CandidateStatus @default(PENDING)
+  validatedAt     DateTime?       @map("validated_at")
+  validatedBy     String?         @map("validated_by") // Admin ID
+  rejectionReason String?         @map("rejection_reason")
+  
+  // Métadonnées soumission
+  ipAddress       String?         @map("ip_address")
+  userAgent       String?         @map("user_agent")
+  country_code    String?         @map("country_code") // Code ISO (CI, SN, CM)
+  
+  // Statistiques
+  totalVotes      Int             @default(0) @map("total_votes")
+  totalRevenue    Int             @default(0) @map("total_revenue") // en FCFA
+  viewCount       Int             @default(0) @map("view_count")
+  shareCount      Int             @default(0) @map("share_count")
+  rank            Int?            // Position dans le classement
+  
+  // Relations
+  votes           Vote[]
+  
+  // Timestamps
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([totalVotes(sort: Desc)])
+  @@index([createdAt])
+  @@index([country])
+  @@map("candidates")
+}
+
+enum CandidateStatus {
+  PENDING       // En attente de validation
+  APPROVED      // Validé et publié
+  REJECTED      // Refusé
+  SUSPENDED     // Suspendu (anomalie détectée)
+}
+
+// ==============================================
+// MODÈLE VOTE
+// ==============================================
+model Vote {
+  id              String        @id @default(uuid())
+  
+  // Relation candidat
+  candidateId     String        @map("candidate_id")
+  candidate       Candidate     @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  
+  // Informations votant
+  voterEmail      String?       @map("voter_email")
+  voterPhone      String?       @map("voter_phone")
+  voterName       String?       @map("voter_name")
+  voterCountry    String?       @map("voter_country")
+  
+  // Paiement
+  amount          Int           @default(100) // Toujours 100 FCFA
+  currency        String        @default("XOF") // FCFA = XOF (ISO 4217)
+  paymentMethod   PaymentMethod @map("payment_method")
+  paymentProvider String        @map("payment_provider") // "mtn", "orange", "stripe"
+  transactionId   String        @unique @map("transaction_id") // Notre ID unique
+  providerTxId    String?       @unique @map("provider_tx_id") // ID du provider
+  paymentStatus   PaymentStatus @default(PENDING) @map("payment_status")
+  
+  // Métadonnées anti-fraude
+  ipAddress       String        @map("ip_address")
+  userAgent       String?       @map("user_agent")
+  fingerprint     String?       // Browser fingerprint
+  country_code    String?       @map("country_code")
+  
+  // Flags de sécurité
+  isSuspicious    Boolean       @default(false) @map("is_suspicious")
+  suspicionReason String?       @map("suspicion_reason")
+  isVerified      Boolean       @default(false) @map("is_verified")
+  
+  // Timestamps
+  paidAt          DateTime?     @map("paid_at")
+  verifiedAt      DateTime?     @map("verified_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  transaction     Transaction?
+
+  @@index([candidateId])
+  @@index([transactionId])
+  @@index([ipAddress])
+  @@index([paymentStatus])
+  @@index([createdAt])
+  @@map("votes")
+}
+
+enum PaymentMethod {
+  MTN_MOBILE_MONEY      // MTN MoMo
+  ORANGE_MONEY          // Orange Money
+  MOOV_MONEY            // Moov Money (futur)
+  WAVE                  // Wave (futur)
+  CARD                  // Carte bancaire (Stripe)
+}
+
+enum PaymentStatus {
+  PENDING       // En attente
+  PROCESSING    // En cours de traitement
+  COMPLETED     // Complété avec succès
+  FAILED        // Échoué
+  CANCELLED     // Annulé
+  REFUNDED      // Remboursé
+}
+
+// ==============================================
+// MODÈLE TRANSACTION (Audit trail paiements)
+// ==============================================
+model Transaction {
+  id                String        @id @default(uuid())
+  
+  // Relation vote
+  voteId            String        @unique @map("vote_id")
+  vote              Vote          @relation(fields: [voteId], references: [id], onDelete: Cascade)
+  
+  // Détails paiement
+  amount            Int
+  currency          String        @default("XOF")
+  paymentMethod     PaymentMethod @map("payment_method")
+  provider          String        // "mtn", "orange", "stripe"
+  providerReference String        @unique @map("provider_reference")
+  
+  // Statut
+  status            PaymentStatus @default(PENDING)
+  failureReason     String?       @map("failure_reason")
+  
+  // Réponses API (JSON brut)
+  initResponse      Json?         @map("init_response") // Réponse initialisation
+  webhookPayload    Json?         @map("webhook_payload") // Payload webhook
+  statusResponse    Json?         @map("status_response") // Réponse vérification
+  
+  // Informations client
+  customerEmail     String?       @map("customer_email")
+  customerPhone     String?       @map("customer_phone")
+  customerName      String?       @map("customer_name")
+  
+  // Métadonnées
+  ipAddress         String?       @map("ip_address")
+  userAgent         String?       @map("user_agent")
+  
+  // Timestamps
+  initiatedAt       DateTime      @default(now()) @map("initiated_at")
+  completedAt       DateTime?     @map("completed_at")
+  failedAt          DateTime?     @map("failed_at")
+  cancelledAt       DateTime?     @map("cancelled_at")
+  refundedAt        DateTime?     @map("refunded_at")
+  
+  @@index([providerReference])
+  @@index([status])
+  @@index([provider])
+  @@index([initiatedAt])
+  @@map("transactions")
+}
+
+// ==============================================
+// MODÈLE AUDIT LOG (Traçabilité actions admin)
+// ==============================================
+model AuditLog {
+  id          String   @id @default(uuid())
+  
+  // Admin qui a effectué l'action
+  adminId     String   @map("admin_id")
+  admin       Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  
+  // Détails de l'action
+  action      String   // "VALIDATE_CANDIDATE", "REJECT_CANDIDATE", "SUSPEND_VOTE"
+  entityType  String   @map("entity_type") // "Candidate", "Vote", "Admin"
+  entityId    String   @map("entity_id")
+  
+  // Données supplémentaires (JSON)
+  oldData     Json?    @map("old_data") // État avant
+  newData     Json?    @map("new_data") // État après
+  details     Json?    // Autres détails
+  
+  // Métadonnées
+  ipAddress   String   @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  
+  // Timestamp
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([adminId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ==============================================
+// MODÈLE STATISTIQUES QUOTIDIENNES
+// ==============================================
+model DailyStats {
+  id              String   @id @default(uuid())
+  date            DateTime @unique @db.Date
+  
+  // Statistiques globales
+  totalCandidates Int      @default(0) @map("total_candidates")
+  newCandidates   Int      @default(0) @map("new_candidates")
+  totalVotes      Int      @default(0) @map("total_votes")
+  totalRevenue    Int      @default(0) @map("total_revenue") // FCFA
+  
+  // Répartition par méthode de paiement
+  mtnVotes        Int      @default(0) @map("mtn_votes")
+  orangeVotes     Int      @default(0) @map("orange_votes")
+  moovVotes       Int      @default(0) @map("moov_votes")
+  waveVotes       Int      @default(0) @map("wave_votes")
+  cardVotes       Int      @default(0) @map("card_votes")
+  
+  // Revenus par méthode
+  mtnRevenue      Int      @default(0) @map("mtn_revenue")
+  orangeRevenue   Int      @default(0) @map("orange_revenue")
+  cardRevenue     Int      @default(0) @map("card_revenue")
+  
+  // Géographie (JSON)
+  topCountries    Json?    @map("top_countries") // {"CI": 150, "SN": 80}
+  
+  // Performances
+  avgVotesPerCandidate Float? @map("avg_votes_per_candidate")
+  topCandidateId  String?  @map("top_candidate_id")
+  topCandidateVotes Int?   @map("top_candidate_votes")
+  
+  // Timestamp
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([date])
+  @@map("daily_stats")
+}
+
+// ==============================================
+// MODÈLE WEBHOOK LOG (Traçabilité webhooks)
+// ==============================================
+model WebhookLog {
+  id            String   @id @default(uuid())
+  
+  // Provider
+  provider      String   // "mtn", "orange", "stripe"
+  event         String   // Type d'événement
+  
+  // Données
+  payload       Json     // Payload complet
+  headers       Json?    // Headers HTTP
+  
+  // Traitement
+  processed     Boolean  @default(false)
+  processedAt   DateTime? @map("processed_at")
+  error         String?  // Message d'erreur si échec
+  
+  // Métadonnées
+  ipAddress     String   @map("ip_address")
+  
+  // Timestamp
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([provider])
+  @@index([processed])
+  @@index([createdAt])
+  @@map("webhook_logs")
+}
+
+// ==============================================
+// MODÈLE IP BLACKLIST (Anti-fraude)
+// ==============================================
+model IpBlacklist {
+  id          String   @id @default(uuid())
+  ipAddress   String   @unique @map("ip_address")
+  reason      String
+  bannedBy    String   @map("banned_by") // Admin ID
+  
+  // Timestamps
+  createdAt   DateTime @default(now()) @map("created_at")
+  expiresAt   DateTime? @map("expires_at")
+
+  @@index([ipAddress])
+  @@map("ip_blacklist")
+}
